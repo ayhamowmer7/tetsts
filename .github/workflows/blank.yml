@@ -1,0 +1,50 @@
+name: Stream-RDP-Server
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *' # سيعيد تشغيل نفسه كل 6 ساعات لضمان الاستمرارية 24/7
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+    steps:
+    - name: Prepare System
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+        Restart-Service -Name TermService -Force
+        netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
+
+    - name: Create User
+      run: |
+        $password = "Admin@Stream2026" # كلمة سر ثابتة ليسهل عليك الدخول من الهاتف
+        $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+        New-LocalUser -Name "Streamer" -Password $securePass -AccountNeverExpires
+        Add-LocalGroupMember -Group "Administrators" -Member "Streamer"
+        echo "Password is: $password"
+
+    - name: Install Tailscale & Tools
+      run: |
+        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+        Invoke-WebRequest -Uri $tsUrl -OutFile "ts.msi"
+        Start-Process msiexec.exe -ArgumentList "/i", "ts.msi", "/quiet", "/norestart" -Wait
+        # تحميل Nginx سريعاً
+        Invoke-WebRequest -Uri "http://nginx.org/download/nginx-1.24.0.zip" -OutFile "nginx.zip"
+        Expand-Archive -Path "nginx.zip" -DestinationPath "C:\"
+
+    - name: Connect Tailscale
+      run: |
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=stream-server
+        $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+        echo "IP_ADDR=$tsIP" >> $env:GITHUB_ENV
+
+    - name: Keep Alive & Activity
+      run: |
+        Write-Host "Server IP: $env:IP_ADDR"
+        Write-Host "User: Streamer"
+        while ($true) {
+            $cpu = (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue
+            Write-Host "[$(Get-Date)] Server Active - CPU Usage: $cpu %"
+            Start-Sleep -Seconds 300
+        }
